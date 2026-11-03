@@ -418,6 +418,8 @@ class SchedulerGUI:
             if not compiler:
                 raise RuntimeError("g++ was not found. Install a C++17 compiler and add g++ to PATH.")
             command = [compiler, "-std=c++17", "-O2", "main.cpp", "-o", str(executable)]
+            if os.name == "nt":
+                command.append("-lshell32")
             built = subprocess.run(command, cwd=ROOT_DIR, capture_output=True, text=True, timeout=120)
             if built.returncode != 0:
                 raise RuntimeError("Could not build the C++ scheduler:\n" + (built.stderr or built.stdout))

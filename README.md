@@ -1,6 +1,6 @@
 # CPU Scheduling Simulator
 
-A portable CPU-scheduling simulator with a standalone **C++17 terminal application** and an optional **Python/Tkinter desktop GUI**. Both interfaces use the same tested C++ scheduling engine for all six policies, per-process and aggregate metrics, context-switch overhead, and priority aging. The GUI is an additional front-end; it does not replace or alter the original terminal application.
+A portable CPU-scheduling simulator whose normal launch opens the **Python/Tkinter desktop GUI**. The original C++17 terminal menu remains available as an optional mode. Both interfaces use the same tested C++ scheduling engine for all six policies, per-process and aggregate metrics, context-switch overhead, and priority aging.
 
 ## Features
 
@@ -11,15 +11,14 @@ A portable CPU-scheduling simulator with a standalone **C++17 terminal applicati
 - Segmented ASCII Gantt chart, detailed interval timeline, and step-by-step scheduling decisions with ready-set and remaining-time snapshots.
 - All-algorithm comparison on one dataset, per-metric best markers, comparison CSV, and measured benchmarks for 10, 100, 1,000, and 10,000 processes.
 - Reproducible random inputs using a configurable seed; optional context-switch overhead and priority aging.
-- Optional desktop GUI with editable process table, random data, CSV import/export, algorithm controls, comparison, metrics, Gantt chart, timeline, and execution-step navigation.
+- GUI-first startup with editable process table, random data, CSV import/export, algorithm controls, comparison, metrics, Gantt chart, timeline, and execution-step navigation.
 - The Python GUI compiles/invokes the C++17 backend; it does not duplicate the scheduling algorithms and uses no third-party Python packages.
 - A built-in regression suite available from the menu application or as a separate executable.
 
 ## Requirements
 
-- The terminal application requires a C++17 compiler such as `g++` and the standard C++ library only.
-- The optional GUI requires Python 3.10+ with Tkinter and `g++` on `PATH`. Tkinter is part of Python's standard library; on Debian/Ubuntu it may need the system package `python3-tk` (`sudo apt install python3-tk`). No third-party Python packages are used.
-- The terminal application remains independent of Python/Tkinter. No Makefile or CMake is used.
+- The GUI requires Python 3.10+ with Tkinter, plus a C++17 compiler such as `g++` on `PATH` for its scheduler backend. Tkinter is part of Python's standard library; on Debian/Ubuntu it may need the system package `python3-tk`. No third-party Python packages are used.
+- The optional terminal menu and test runner use the same C++17 compiler. No Makefile or CMake is used.
 
 ## Compile and run
 
@@ -30,34 +29,34 @@ g++ -std=c++17 main.cpp -o scheduler
 ./scheduler
 ```
 
+Running `scheduler` with no arguments now opens the GUI. To use the original terminal menu instead, run `./scheduler --terminal`.
+
 On Windows (MinGW g++):
 
 ```powershell
-g++ -std=c++17 main.cpp -o scheduler.exe
+g++ -std=c++17 main.cpp -o scheduler.exe -lshell32
 .\scheduler.exe
 ```
 
-## Desktop GUI (Python/Tkinter)
+On Windows, the simplest no-console launch is to **double-click `cpu_scheduler_gui.pyw`**. It opens the desktop GUI directly; no terminal commands or terminal menu are needed. The `.pyw` launcher uses the installed Python windowed association.
 
-Run from the project directory; the GUI automatically compiles the C++ backend on first use (or when its sources change):
+## GUI behavior
+
+The normal application launch opens the GUI. It automatically compiles the C++ backend on first use (or when its sources change). On Linux/macOS, the Python entry point can also be launched with:
 
 ```sh
 python3 cpu_scheduler_gui.py
 ```
 
-On Windows with Python and MinGW g++ installed:
-
-```powershell
-py -3 cpu_scheduler_gui.py
-```
-
 The GUI supports process add/edit/delete/clear, reproducible random workloads, CSV import/export, all six scheduling policies, quantum/overhead/aging controls, per-process and aggregate metrics, all-policy comparison with per-metric best markers, result/comparison CSV exports, a horizontally scrollable Gantt chart, a complete execution timeline, and decision-by-decision stepping that shows the ready set, selected process, and remaining bursts. The GUI limits the drawn chart to the first 500 intervals for responsiveness while retaining every interval in the timeline table and exports.
 
-The application also accepts `--test` to run the regression tests:
+The C++ executable also accepts `--test` to run the regression tests:
 
 ```sh
 ./scheduler --test
 ```
+
+The original terminal menu is available with `./scheduler --terminal`.
 
 Or compile the test runner separately:
 
@@ -162,6 +161,7 @@ main.cpp                 Interactive menu, management, analysis, benchmark, demo
 scheduler.hpp            C++17 scheduling engine, policies, timeline and metrics
 io.hpp                   CSV handling, terminal formatting and input helpers
 cpu_scheduler_gui.py     Optional Tkinter desktop front-end using the C++ backend
+cpu_scheduler_gui.pyw    Windowed Windows double-click launcher (no console)
 tests_gui.py             Standard-library integration tests for the GUI backend contract
 tests.hpp                Assertion-based regression suite
 tests.cpp                Standalone test-runner entry point

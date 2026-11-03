@@ -20,9 +20,11 @@ class GuiBackendIntegrationTests(unittest.TestCase):
         cls.temp_root = tempfile.TemporaryDirectory(prefix="cpu-scheduling-gui-tests-")
         cls.temp_path = Path(cls.temp_root.name)
         cls.executable = cls.temp_path / ("scheduler-test.exe" if os.name == "nt" else "scheduler-test")
+        command = [compiler, "-std=c++17", "-O2", "main.cpp", "-o", str(cls.executable)]
+        if os.name == "nt":
+            command.append("-lshell32")
         built = subprocess.run(
-            [compiler, "-std=c++17", "-O2", "main.cpp", "-o", str(cls.executable)],
-            cwd=PROJECT, capture_output=True, text=True, timeout=120,
+            command, cwd=PROJECT, capture_output=True, text=True, timeout=120,
         )
         if built.returncode != 0:
             raise RuntimeError(built.stderr or built.stdout)

@@ -2,9 +2,20 @@
 #include "tests.hpp"
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <random>
 #include <set>
+
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#include <shellapi.h>
+#else
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace cpusim {
 
@@ -407,6 +418,45 @@ static int runGuiBackend(int argc, char* argv[]) {
     }
 }
 
+static int launchGui(const char* executable) {
+    std::error_code pathError;
+    std::filesystem::path binaryPath = std::filesystem::absolute(executable, pathError);
+    if (pathError) binaryPath = std::filesystem::path(executable);
+    const std::filesystem::path directory = binaryPath.parent_path();
+#ifdef _WIN32
+    const std::filesystem::path guiEntry = directory / "cpu_scheduler_gui.pyw";
+#else
+    const std::filesystem::path guiEntry = directory / "cpu_scheduler_gui.py";
+#endif
+    if (!std::filesystem::exists(guiEntry)) {
+        std::cerr << "Could not find the GUI launcher beside the application: " << guiEntry.string() << '\n';
+        return 2;
+    }
+
+#ifdef _WIN32
+    const HINSTANCE opened = ShellExecuteW(nullptr, L"open", guiEntry.c_str(), nullptr, directory.c_str(), SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(opened) <= 32) {
+        std::cerr << "Could not open the GUI. Use the cpu_scheduler_gui.pyw file association or install Python.\n";
+        return 2;
+    }
+    return 0;
+#else
+    const pid_t child = fork();
+    if (child < 0) {
+        std::cerr << "Could not start the GUI process.\n";
+        return 2;
+    }
+    if (child == 0) {
+        execlp("python3", "python3", guiEntry.c_str(), static_cast<char*>(nullptr));
+        execlp("python", "python", guiEntry.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(child, &status, 0) < 0) return 2;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+#endif
+}
+
 static void showMenu() {
     std::cout << "\n========================================\n"
               << "       CPU SCHEDULING SIMULATOR\n"
@@ -424,6 +474,11 @@ int main(int argc, char* argv[]) {
     using namespace cpusim;
     if (argc > 1 && std::string(argv[1]) == "--test") return runTests();
     if (argc > 1 && std::string(argv[1]) == "--gui-run") return runGuiBackend(argc, argv);
+    if (argc == 1) return launchGui(argv[0]);
+    if (argc > 1 && std::string(argv[1]) != "--terminal") {
+        std::cerr << "Usage: scheduler [--terminal | --test]\n";
+        return 2;
+    }
     while (true) {
         showMenu();
         const int choice = readInt("Choice: ", 0, 11);
