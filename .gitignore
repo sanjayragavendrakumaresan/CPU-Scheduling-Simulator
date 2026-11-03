@@ -1,0 +1,12 @@
+# Local builds
+scheduler
+scheduler.exe
+scheduler_tests
+scheduler_tests.exe
+*.o
+*.obj
+
+# Compiler diagnostics and temporary files
+compile.log
+test_compile.log
+*.tmp
