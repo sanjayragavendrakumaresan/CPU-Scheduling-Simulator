@@ -3,8 +3,12 @@ scheduler
 scheduler.exe
 scheduler_tests
 scheduler_tests.exe
+scheduler_gui_backend
+scheduler_gui_backend.exe
 *.o
 *.obj
+__pycache__/
+*.py[cod]
 
 # Compiler diagnostics and temporary files
 compile.log

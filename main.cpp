@@ -323,6 +323,90 @@ static void exportMenu() {
     }
 }
 
+static int parseArgumentInt(const char* text, const std::string& name) {
+    const std::string value = text;
+    std::size_t used = 0;
+    const int parsed = std::stoi(value, &used);
+    if (used != value.size()) throw std::invalid_argument("Invalid " + name + ": " + value);
+    return parsed;
+}
+
+static Algorithm parseAlgorithmKey(const std::string& key) {
+    if (key == "fcfs") return Algorithm::FCFS;
+    if (key == "sjf") return Algorithm::SJF;
+    if (key == "srtf") return Algorithm::SRTF;
+    if (key == "priority-np") return Algorithm::PriorityNonPreemptive;
+    if (key == "priority-p") return Algorithm::PriorityPreemptive;
+    if (key == "rr") return Algorithm::RoundRobin;
+    throw std::invalid_argument("Unknown algorithm key: " + key);
+}
+
+static void writeGuiRow(std::ofstream& out, const std::vector<std::string>& fields) {
+    for (std::size_t i = 0; i < fields.size(); ++i) {
+        if (i) out << ',';
+        out << csvEscape(fields[i]);
+    }
+    out << '\n';
+}
+
+static int runGuiBackend(int argc, char* argv[]) {
+    if (argc != 10) {
+        std::cerr << "Usage: scheduler --gui-run <algorithm> <processes.csv> <results.csv> <timeline.csv> <decisions.csv> <quantum> <overhead> <aging-interval>\n";
+        return 2;
+    }
+    try {
+        const Algorithm algorithm = parseAlgorithmKey(argv[2]);
+        const int quantum = parseArgumentInt(argv[7], "quantum");
+        const int overhead = parseArgumentInt(argv[8], "overhead");
+        const int agingInterval = parseArgumentInt(argv[9], "aging interval");
+        std::vector<Process> input;
+        std::string error;
+        if (!readProcessesCsv(argv[3], input, error)) throw std::runtime_error(error);
+        const SchedulingResult result = schedule(input, algorithm, quantum, overhead, agingInterval, true);
+
+        std::ofstream processOut(argv[4]);
+        if (!processOut) throw std::runtime_error("Could not write results CSV: " + std::string(argv[4]));
+        writeGuiRow(processOut, {"Type", "ProcessID", "Arrival", "Burst", "Priority", "Completion", "Turnaround", "Waiting", "Response", "FirstStart", "AverageWaiting", "AverageTurnaround", "AverageResponse", "CPUUtilizationPercent", "Throughput", "ContextSwitches"});
+        for (const auto& s : result.processes) {
+            std::vector<std::string> row(16);
+            row[0] = "PROCESS"; row[1] = s.process.id;
+            row[2] = std::to_string(s.process.arrival); row[3] = std::to_string(s.process.burst);
+            row[4] = std::to_string(s.process.priority); row[5] = std::to_string(s.completion);
+            row[6] = std::to_string(s.turnaround); row[7] = std::to_string(s.waiting);
+            row[8] = std::to_string(s.response); row[9] = std::to_string(s.firstStart);
+            writeGuiRow(processOut, row);
+        }
+        std::vector<std::string> metricRow(16);
+        metricRow[0] = "METRICS";
+        metricRow[10] = std::to_string(result.metrics.avgWaiting);
+        metricRow[11] = std::to_string(result.metrics.avgTurnaround);
+        metricRow[12] = std::to_string(result.metrics.avgResponse);
+        metricRow[13] = std::to_string(result.metrics.cpuUtilization);
+        metricRow[14] = std::to_string(result.metrics.throughput);
+        metricRow[15] = std::to_string(result.metrics.contextSwitches);
+        writeGuiRow(processOut, metricRow);
+        if (!processOut) throw std::runtime_error("Failed while writing results CSV.");
+
+        std::ofstream timelineOut(argv[5]);
+        if (!timelineOut) throw std::runtime_error("Could not write timeline CSV: " + std::string(argv[5]));
+        writeGuiRow(timelineOut, {"Start", "End", "Activity"});
+        for (const auto& segment : result.timeline)
+            writeGuiRow(timelineOut, {std::to_string(segment.start), std::to_string(segment.end), segment.label});
+        if (!timelineOut) throw std::runtime_error("Failed while writing timeline CSV.");
+
+        std::ofstream decisionsOut(argv[6]);
+        if (!decisionsOut) throw std::runtime_error("Could not write decisions CSV: " + std::string(argv[6]));
+        writeGuiRow(decisionsOut, {"Time", "Ready", "Selected", "Remaining"});
+        for (const auto& decision : result.decisions)
+            writeGuiRow(decisionsOut, {std::to_string(decision.time), decision.ready, decision.selected, decision.remaining});
+        if (!decisionsOut) throw std::runtime_error("Failed while writing decisions CSV.");
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "GUI backend error: " << e.what() << '\n';
+        return 2;
+    }
+}
+
 static void showMenu() {
     std::cout << "\n========================================\n"
               << "       CPU SCHEDULING SIMULATOR\n"
@@ -339,6 +423,7 @@ static void showMenu() {
 int main(int argc, char* argv[]) {
     using namespace cpusim;
     if (argc > 1 && std::string(argv[1]) == "--test") return runTests();
+    if (argc > 1 && std::string(argv[1]) == "--gui-run") return runGuiBackend(argc, argv);
     while (true) {
         showMenu();
         const int choice = readInt("Choice: ", 0, 11);
