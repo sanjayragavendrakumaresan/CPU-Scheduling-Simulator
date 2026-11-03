@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import csv
 import os
-import random
 import shutil
 import subprocess
 import sys
@@ -96,6 +95,7 @@ class SchedulerGUI:
         self.processes: list[dict] = []
         self.last_result: dict | None = None
         self.last_comparison: list[dict] | None = None
+        self.last_comparison_settings: tuple[int, int, int] | None = None
         self.busy = False
         self.step_index = -1
         self.chart_segments: list[dict] = []
@@ -274,6 +274,7 @@ class SchedulerGUI:
     def _dataset_changed(self) -> None:
         self.last_result = None
         self.last_comparison = None
+        self.last_comparison_settings = None
         self.result_tree.delete(*self.result_tree.get_children())
         self.timeline_tree.delete(*self.timeline_tree.get_children())
         self.chart_segments = []
@@ -338,56 +339,25 @@ class SchedulerGUI:
         seed = simpledialog.askinteger("Random dataset", "Reproducible seed", minvalue=0, initialvalue=2026, parent=self.root)
         if None in (max_arrival, max_burst, max_priority, seed):
             return
-        rng = random.Random(seed)
-        self.processes = [
-            {"id": f"P{i + 1}", "arrival": rng.randint(0, max_arrival), "burst": rng.randint(1, max_burst), "priority": rng.randint(1, max_priority)}
-            for i in range(count)
-        ]
-        self._refresh_processes()
-        self._dataset_changed()
-        self.status_var.set(f"Generated {count} reproducible processes (seed {seed}).")
-
-    @staticmethod
-    def _canonical_header(header: str) -> str:
-        return "".join(ch.lower() for ch in header if ch.isalnum())
+        def operation():
+            with tempfile.TemporaryDirectory(prefix="cpu-scheduler-generate-") as folder:
+                output = Path(folder) / "generated.csv"
+                self._run_cpp(["--gui-generate", str(output), str(count), str(max_arrival), str(max_burst), str(max_priority), str(seed)])
+                return self._read_process_csv(output)
+        self._run_async(f"Generating {count} processes in C++…", operation,
+                        lambda rows: self._replace_processes(rows, f"Generated {count} reproducible processes (seed {seed}) in C++."))
 
     def import_csv(self) -> None:
         path = filedialog.askopenfilename(title="Import process CSV", filetypes=[("CSV files", "*.csv"), ("All files", "*.*")], parent=self.root)
         if not path:
             return
-        try:
-            with open(path, newline="", encoding="utf-8-sig") as handle:
-                reader = csv.DictReader(handle)
-                headers = {self._canonical_header(h): h for h in (reader.fieldnames or [])}
-                aliases = {
-                    "id": ("processid", "id"), "arrival": ("arrivaltime", "arrival", "at"),
-                    "burst": ("bursttime", "burst", "bt"), "priority": ("priority",),
-                }
-                selected = {}
-                for key, options in aliases.items():
-                    selected[key] = next((headers[name] for name in options if name in headers), None)
-                if any(value is None for value in selected.values()):
-                    raise ValueError("CSV needs ProcessID, ArrivalTime, BurstTime, and Priority columns.")
-                loaded = []
-                for line_no, row in enumerate(reader, start=2):
-                    p = {"id": (row[selected["id"]] or "").strip()}
-                    p["arrival"] = int(row[selected["arrival"]])
-                    p["burst"] = int(row[selected["burst"]])
-                    p["priority"] = int(row[selected["priority"]])
-                    if not p["id"] or p["arrival"] < 0 or p["burst"] <= 0:
-                        raise ValueError(f"Invalid process values at CSV row {line_no}.")
-                    loaded.append(p)
-                if not loaded:
-                    raise ValueError("The CSV contains no process rows.")
-                ids = [p["id"] for p in loaded]
-                if len(set(ids)) != len(ids):
-                    raise ValueError("Process IDs must be unique.")
-            self.processes = loaded
-            self._refresh_processes()
-            self._dataset_changed()
-            self.status_var.set(f"Imported {len(loaded)} process(es) from {Path(path).name}.")
-        except (OSError, csv.Error, ValueError, TypeError) as exc:
-            messagebox.showerror("Import failed", str(exc), parent=self.root)
+        def operation():
+            with tempfile.TemporaryDirectory(prefix="cpu-scheduler-import-") as folder:
+                normalized = Path(folder) / "validated.csv"
+                self._run_cpp(["--gui-normalize", path, str(normalized)])
+                return self._read_process_csv(normalized)
+        self._run_async("Validating the selected CSV in C++…", operation,
+                        lambda rows: self._replace_processes(rows, f"Imported {len(rows)} process(es) from {Path(path).name}; validation ran in C++."))
 
     def export_processes(self) -> None:
         if not self.processes:
@@ -396,14 +366,39 @@ class SchedulerGUI:
         path = filedialog.asksaveasfilename(title="Export process CSV", defaultextension=".csv", filetypes=[("CSV files", "*.csv")], parent=self.root)
         if not path:
             return
-        try:
-            self._write_process_csv(path, self.processes)
-            self.status_var.set(f"Saved process dataset to {path}.")
-        except OSError as exc:
-            messagebox.showerror("Export failed", str(exc), parent=self.root)
+        rows = [dict(process) for process in self.processes]
+        def operation():
+            with tempfile.TemporaryDirectory(prefix="cpu-scheduler-export-") as folder:
+                source = Path(folder) / "processes.csv"
+                self._write_process_csv(source, rows)
+                self._run_cpp(["--gui-normalize", str(source), path])
+        self._run_async("Exporting the dataset through the C++ CSV handler…", operation,
+                        lambda _result: self.status_var.set(f"Saved process dataset to {path} using C++ CSV handling."))
+
+    def _replace_processes(self, rows: list[dict], message: str) -> None:
+        self.processes = rows
+        self._refresh_processes()
+        self._dataset_changed()
+        self.status_var.set(message)
+
+    @staticmethod
+    def _read_process_csv(path: str | Path) -> list[dict]:
+        with open(path, newline="", encoding="utf-8-sig") as handle:
+            return [
+                {"id": row["ProcessID"], "arrival": int(row["ArrivalTime"]),
+                 "burst": int(row["BurstTime"]), "priority": int(row["Priority"])}
+                for row in csv.DictReader(handle)
+            ]
+
+    def _run_cpp(self, arguments: list[str]) -> None:
+        executable = self._ensure_backend()
+        completed = subprocess.run([str(executable), *arguments], cwd=ROOT_DIR, capture_output=True, text=True, timeout=120)
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "C++ backend operation failed.")
 
     @staticmethod
     def _write_process_csv(path: str | Path, processes: list[dict]) -> None:
+        """Serialize visible widget values for C++ backend IPC; C++ owns validation and behavior."""
         with open(path, "w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow(["ProcessID", "ArrivalTime", "BurstTime", "Priority"])
@@ -460,7 +455,34 @@ class SchedulerGUI:
                 timeline = [{"start": int(row["Start"]), "end": int(row["End"]), "activity": row["Activity"]} for row in csv.DictReader(handle)]
             with open(decisions_csv, newline="", encoding="utf-8") as handle:
                 decisions = [{"time": int(row["Time"]), "ready": row["Ready"], "selected": row["Selected"], "remaining": row["Remaining"]} for row in csv.DictReader(handle)]
-            return {"algorithm": algorithm, "label": ALGORITHM_LABEL[algorithm], "processes": process_rows, "metrics": metrics, "timeline": timeline, "decisions": decisions}
+            return {"algorithm": algorithm, "label": ALGORITHM_LABEL[algorithm], "processes": process_rows,
+                    "metrics": metrics, "timeline": timeline, "decisions": decisions,
+                    "settings": {"quantum": quantum, "overhead": overhead, "aging": aging}}
+
+    def _run_compare_backend(self, processes: list[dict], quantum: int, overhead: int, aging: int,
+                             output_path: str | Path | None = None) -> list[dict]:
+        with tempfile.TemporaryDirectory(prefix="cpu-scheduler-compare-") as folder:
+            input_csv = Path(folder) / "processes.csv"
+            comparison_csv = Path(output_path) if output_path else Path(folder) / "comparison.csv"
+            self._write_process_csv(input_csv, processes)
+            self._run_cpp(["--gui-compare", str(input_csv), str(comparison_csv), str(quantum), str(overhead), str(aging)])
+            with open(comparison_csv, newline="", encoding="utf-8") as handle:
+                return [
+                    {
+                        "label": row["Algorithm"],
+                        "metrics": {
+                            "waiting": float(row["AverageWaiting"]), "turnaround": float(row["AverageTurnaround"]),
+                            "response": float(row["AverageResponse"]), "util": float(row["CPUUtilizationPercent"]),
+                            "throughput": float(row["Throughput"]), "switches": int(row["ContextSwitches"]),
+                        },
+                        "best": {
+                            "waiting": row["BestWaiting"] == "1", "turnaround": row["BestTurnaround"] == "1",
+                            "response": row["BestResponse"] == "1", "util": row["BestUtilization"] == "1",
+                            "throughput": row["BestThroughput"] == "1", "switches": row["BestSwitches"] == "1",
+                        },
+                    }
+                    for row in csv.DictReader(handle)
+                ]
 
     def _set_busy(self, busy: bool, message: str) -> None:
         self.busy = busy
@@ -493,13 +515,18 @@ class SchedulerGUI:
 
     def _read_settings(self) -> tuple[str, int, int, int]:
         key = ALGORITHM_BY_LABEL[self.algorithm_var.get()]
+        quantum, overhead, aging = self._read_common_settings()
+        if key not in ("priority-np", "priority-p"):
+            aging = 0
+        return key, quantum, overhead, aging
+
+    def _read_common_settings(self) -> tuple[int, int, int]:
         quantum, overhead, aging = self.quantum_var.get(), self.overhead_var.get(), self.aging_var.get()
         if quantum <= 0 or overhead < 0 or aging <= 0:
             raise ValueError("Quantum must be > 0, overhead must be >= 0, and aging interval must be > 0.")
         if not self.processes:
             raise ValueError("Add or import at least one process first.")
-        active_aging = aging if self.use_aging_var.get() and key in ("priority-np", "priority-p") else 0
-        return key, quantum, overhead, active_aging
+        return quantum, overhead, aging if self.use_aging_var.get() else 0
 
     def run_selected(self) -> None:
         try:
@@ -512,16 +539,16 @@ class SchedulerGUI:
 
     def compare_all(self) -> None:
         try:
-            _key, quantum, overhead, aging = self._read_settings()
+            quantum, overhead, aging = self._read_common_settings()
         except (ValueError, tk.TclError) as exc:
             messagebox.showerror("Check settings", str(exc), parent=self.root)
             return
         data = [dict(p) for p in self.processes]
-
-        def operation() -> list[dict]:
-            return [self._run_backend(data, key, quantum, overhead, aging if key in ("priority-np", "priority-p") else 0) for _, key in ALGORITHMS]
-
-        self._run_async("Running all six algorithms for comparison…", operation, self._show_comparison)
+        self.last_comparison_settings = (quantum, self.overhead_var.get(), aging)
+        self.last_comparison = None
+        self._run_async("Comparing all six algorithms in C++…",
+                        lambda: self._run_compare_backend(data, quantum, self.overhead_var.get(), aging),
+                        self._show_comparison)
 
     def _show_result(self, result: dict) -> None:
         self.last_result = result
@@ -630,30 +657,16 @@ class SchedulerGUI:
             tree.heading(key, text=title)
             tree.column(key, anchor="center", width=145 if key == "algorithm" else 115)
         tree.pack(fill="both", expand=True)
-        getters = {
-            "waiting": lambda r: r["metrics"]["avg_waiting"],
-            "turnaround": lambda r: r["metrics"]["avg_turnaround"],
-            "response": lambda r: r["metrics"]["avg_response"],
-            "util": lambda r: r["metrics"]["cpu_utilization"],
-            "throughput": lambda r: r["metrics"]["throughput"],
-            "switches": lambda r: r["metrics"]["context_switches"],
-        }
-        best = {
-            "waiting": min(getters["waiting"](r) for r in results),
-            "turnaround": min(getters["turnaround"](r) for r in results),
-            "response": min(getters["response"](r) for r in results),
-            "util": max(getters["util"](r) for r in results),
-            "throughput": max(getters["throughput"](r) for r in results),
-            "switches": min(getters["switches"](r) for r in results),
-        }
+        metric_specs = [
+            ("waiting", 2), ("turnaround", 2), ("response", 2),
+            ("util", 2), ("throughput", 4), ("switches", 0),
+        ]
         for r in results:
-            m = r["metrics"]
             values = [r["label"]]
-            for key in ("waiting", "turnaround", "response", "util", "throughput", "switches"):
-                value = getters[key](r)
-                best_key = "turnaround" if key == "turnaround" else key
-                text = f"{value:.2f}" if isinstance(value, float) else str(value)
-                if abs(float(value) - float(best[best_key])) < 1e-9:
+            for key, precision in metric_specs:
+                value = r["metrics"][key]
+                text = f"{value:.{precision}f}" if precision else str(value)
+                if r["best"][key]:
                     text += " *"
                 values.append(text)
             tree.insert("", "end", values=values)
@@ -668,19 +681,17 @@ class SchedulerGUI:
         path = filedialog.asksaveasfilename(title="Export schedule results", defaultextension=".csv", filetypes=[("CSV files", "*.csv")], parent=self.root)
         if not path:
             return
-        try:
-            with open(path, "w", newline="", encoding="utf-8") as handle:
-                writer = csv.writer(handle)
-                writer.writerow(["Type", "Algorithm", "ProcessID", "Arrival", "Burst", "Priority", "Completion", "Turnaround", "Waiting", "Response", "FirstStart", "ActivityStart", "ActivityEnd", "Activity", "AverageWaiting", "AverageTurnaround", "AverageResponse", "CPUUtilizationPercent", "Throughput", "ContextSwitches"])
-                for p in self.last_result["processes"]:
-                    writer.writerow(["PROCESS", self.last_result["label"], p["id"], p["arrival"], p["burst"], p["priority"], p["completion"], p["turnaround"], p["waiting"], p["response"], p["first_start"], "", "", "", "", "", "", "", "", ""])
-                m = self.last_result["metrics"]
-                writer.writerow(["METRICS", self.last_result["label"], "", "", "", "", "", "", "", "", "", "", "", "", m["avg_waiting"], m["avg_turnaround"], m["avg_response"], m["cpu_utilization"], m["throughput"], m["context_switches"]])
-                for t in self.last_result["timeline"]:
-                    writer.writerow(["TIMELINE", self.last_result["label"], "", "", "", "", "", "", "", "", "", t["start"], t["end"], t["activity"], "", "", "", "", "", ""])
-            self.status_var.set(f"Exported result, metrics, and timeline to {path}.")
-        except OSError as exc:
-            messagebox.showerror("Export failed", str(exc), parent=self.root)
+        result = self.last_result
+        processes = [dict(process) for process in self.processes]
+        settings = result["settings"]
+        def operation():
+            with tempfile.TemporaryDirectory(prefix="cpu-scheduler-result-export-") as folder:
+                input_csv = Path(folder) / "processes.csv"
+                self._write_process_csv(input_csv, processes)
+                self._run_cpp(["--gui-export-result", result["algorithm"], str(input_csv), path,
+                               str(settings["quantum"]), str(settings["overhead"]), str(settings["aging"])])
+        self._run_async("Exporting results, metrics and trace from C++…", operation,
+                        lambda _result: self.status_var.set(f"C++ exported the schedule, metrics and trace to {path}."))
 
     def export_comparison(self) -> None:
         if not self.last_comparison:
@@ -689,22 +700,20 @@ class SchedulerGUI:
         path = filedialog.asksaveasfilename(title="Export comparison CSV", defaultextension=".csv", filetypes=[("CSV files", "*.csv")], parent=self.root)
         if not path:
             return
-        try:
-            with open(path, "w", newline="", encoding="utf-8") as handle:
-                writer = csv.writer(handle)
-                writer.writerow(["Algorithm", "AverageWaiting", "AverageTurnaround", "AverageResponse", "CPUUtilizationPercent", "Throughput", "ContextSwitches"])
-                for r in self.last_comparison:
-                    m = r["metrics"]
-                    writer.writerow([r["label"], m["avg_waiting"], m["avg_turnaround"], m["avg_response"], m["cpu_utilization"], m["throughput"], m["context_switches"]])
-            self.status_var.set(f"Exported algorithm comparison to {path}.")
-        except OSError as exc:
-            messagebox.showerror("Export failed", str(exc), parent=self.root)
+        if not self.last_comparison_settings:
+            messagebox.showerror("No comparison settings", "Run Compare all again before exporting.", parent=self.root)
+            return
+        quantum, overhead, aging = self.last_comparison_settings
+        processes = [dict(process) for process in self.processes]
+        self._run_async("Exporting comparison CSV from C++…",
+                        lambda: self._run_compare_backend(processes, quantum, overhead, aging, path),
+                        lambda _result: self.status_var.set(f"C++ exported the comparison to {path}."))
 
     def show_about(self) -> None:
         messagebox.showinfo(
             "About / simulation assumptions",
             "CPU Scheduling Simulator GUI\n\n"
-            "The GUI invokes the C++17 scheduler backend; the six scheduling algorithms are not reimplemented in Python.\n\n"
+            "Python is the Tkinter interface and thin bridge only. The C++17 backend performs scheduling, random generation, CSV validation, comparisons, metric calculations, and result exports; no scheduler logic is reimplemented in Python.\n\n"
             "Metrics: TAT = CT - AT; WT = TAT - BT; RT = first start - AT. CPU utilization counts process execution only and includes idle/switch time in the elapsed-time denominator. Throughput is process count divided by elapsed time from t=0.\n\n"
             "Smaller priority numbers are higher priority. Ties use arrival time then input order. Round Robin arrivals at a quantum boundary enter before the expired process is requeued. Switch overhead is charged on process-to-process transitions after the first dispatch.",
             parent=self.root,

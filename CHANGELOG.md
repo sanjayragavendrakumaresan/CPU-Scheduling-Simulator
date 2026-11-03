@@ -3,7 +3,8 @@
 ## [Unreleased]
 
 - Added a Python/Tkinter desktop front-end that calls the existing C++17 scheduler backend.
-- Added a machine-readable C++ backend mode for process results and execution timelines, plus GUI process management, CSV operations, comparisons, Gantt/timeline display, and step navigation.
+- Moved GUI workload generation, CSV validation/normalization, comparison ranking, and result exports into C++; Python remains the Tkinter interface and thin data bridge.
+- Added C++ backend commands for process results, timelines, and step-by-step decision traces.
 - Documented GUI setup and added ignore rules for its generated executable and Python caches.
 - Made the GUI the default application startup and added a Windows `.pyw` double-click launcher; the terminal menu is now opt-in with `--terminal`.
 

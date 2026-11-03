@@ -418,6 +418,137 @@ static int runGuiBackend(int argc, char* argv[]) {
     }
 }
 
+static bool normalizeGuiCsv(const std::string& inputPath, const std::string& outputPath, std::string& error) {
+    std::vector<Process> input;
+    if (!readProcessesCsv(inputPath, input, error)) return false;
+    return writeProcessesCsv(outputPath, input, error);
+}
+
+static int runGuiNormalizeBackend(int argc, char* argv[]) {
+    if (argc != 4) { std::cerr << "Usage: scheduler --gui-normalize <input.csv> <output.csv>\n"; return 2; }
+    std::string error;
+    if (!normalizeGuiCsv(argv[2], argv[3], error)) { std::cerr << error << '\n'; return 2; }
+    return 0;
+}
+
+static int runGuiGenerateBackend(int argc, char* argv[]) {
+    if (argc != 8) { std::cerr << "Usage: scheduler --gui-generate <output.csv> <count> <max-arrival> <max-burst> <max-priority> <seed>\n"; return 2; }
+    try {
+        const int count = parseArgumentInt(argv[3], "process count");
+        const int maxArrival = parseArgumentInt(argv[4], "maximum arrival");
+        const int maxBurst = parseArgumentInt(argv[5], "maximum burst");
+        const int maxPriority = parseArgumentInt(argv[6], "maximum priority");
+        const int seed = parseArgumentInt(argv[7], "seed");
+        if (count < 1 || count > 100000 || maxArrival < 0 || maxBurst < 1 || maxPriority < 1 || seed < 0)
+            throw std::invalid_argument("Count must be 1..100000, arrival >= 0, burst and priority >= 1, and seed >= 0.");
+        std::mt19937 rng(static_cast<unsigned int>(seed));
+        std::uniform_int_distribution<int> arrivalDist(0, maxArrival);
+        std::uniform_int_distribution<int> burstDist(1, maxBurst);
+        std::uniform_int_distribution<int> priorityDist(1, maxPriority);
+        std::vector<Process> generated;
+        generated.reserve(static_cast<std::size_t>(count));
+        for (int i = 0; i < count; ++i)
+            generated.push_back({"P" + std::to_string(i + 1), arrivalDist(rng), burstDist(rng), priorityDist(rng)});
+        std::string error;
+        if (!writeProcessesCsv(argv[2], generated, error)) throw std::runtime_error(error);
+        return 0;
+    } catch (const std::exception& e) { std::cerr << "GUI backend error: " << e.what() << '\n'; return 2; }
+}
+
+static int runGuiCompareBackend(int argc, char* argv[]) {
+    if (argc != 7) { std::cerr << "Usage: scheduler --gui-compare <input.csv> <comparison.csv> <quantum> <overhead> <aging-interval>\n"; return 2; }
+    try {
+        const int quantum = parseArgumentInt(argv[4], "quantum");
+        const int overhead = parseArgumentInt(argv[5], "overhead");
+        const int agingInterval = parseArgumentInt(argv[6], "aging interval");
+        std::vector<Process> input;
+        std::string error;
+        if (!readProcessesCsv(argv[2], input, error)) throw std::runtime_error(error);
+        std::vector<SchedulingResult> results;
+        for (Algorithm algorithm : allAlgorithms())
+            results.push_back(schedule(input, algorithm, quantum, overhead,
+                (algorithm == Algorithm::PriorityPreemptive || algorithm == Algorithm::PriorityNonPreemptive) ? agingInterval : 0, false));
+        auto minimum = [&](auto metric) {
+            double best = metric(results.front());
+            for (const auto& result : results) best = std::min(best, static_cast<double>(metric(result)));
+            return best;
+        };
+        auto maximum = [&](auto metric) {
+            double best = metric(results.front());
+            for (const auto& result : results) best = std::max(best, static_cast<double>(metric(result)));
+            return best;
+        };
+        const double bestWaiting = minimum([](const auto& r) { return r.metrics.avgWaiting; });
+        const double bestTurnaround = minimum([](const auto& r) { return r.metrics.avgTurnaround; });
+        const double bestResponse = minimum([](const auto& r) { return r.metrics.avgResponse; });
+        const double bestUtilization = maximum([](const auto& r) { return r.metrics.cpuUtilization; });
+        const double bestThroughput = maximum([](const auto& r) { return r.metrics.throughput; });
+        const double bestSwitches = minimum([](const auto& r) { return r.metrics.contextSwitches; });
+        std::ofstream out(argv[3]);
+        if (!out) throw std::runtime_error("Could not write comparison CSV: " + std::string(argv[3]));
+        writeGuiRow(out, {"Algorithm", "AverageWaiting", "AverageTurnaround", "AverageResponse", "CPUUtilizationPercent", "Throughput", "ContextSwitches", "BestWaiting", "BestTurnaround", "BestResponse", "BestUtilization", "BestThroughput", "BestSwitches"});
+        auto isBest = [](double value, double best) { return std::abs(value - best) < 1e-9 ? "1" : "0"; };
+        for (const auto& result : results) {
+            const auto& m = result.metrics;
+            writeGuiRow(out, {result.algorithm, std::to_string(m.avgWaiting), std::to_string(m.avgTurnaround),
+                std::to_string(m.avgResponse), std::to_string(m.cpuUtilization), std::to_string(m.throughput),
+                std::to_string(m.contextSwitches), isBest(m.avgWaiting, bestWaiting),
+                isBest(m.avgTurnaround, bestTurnaround), isBest(m.avgResponse, bestResponse),
+                isBest(m.cpuUtilization, bestUtilization), isBest(m.throughput, bestThroughput),
+                isBest(m.contextSwitches, bestSwitches)});
+        }
+        if (!out) throw std::runtime_error("Failed while writing comparison CSV.");
+        return 0;
+    } catch (const std::exception& e) { std::cerr << "GUI backend error: " << e.what() << '\n'; return 2; }
+}
+
+static int runGuiExportResultBackend(int argc, char* argv[]) {
+    if (argc != 8) { std::cerr << "Usage: scheduler --gui-export-result <algorithm> <input.csv> <output.csv> <quantum> <overhead> <aging-interval>\n"; return 2; }
+    try {
+        const Algorithm algorithm = parseAlgorithmKey(argv[2]);
+        const int quantum = parseArgumentInt(argv[5], "quantum");
+        const int overhead = parseArgumentInt(argv[6], "overhead");
+        const int agingInterval = parseArgumentInt(argv[7], "aging interval");
+        std::vector<Process> input;
+        std::string error;
+        if (!readProcessesCsv(argv[3], input, error)) throw std::runtime_error(error);
+        const SchedulingResult result = schedule(input, algorithm, quantum, overhead, agingInterval, true);
+        std::ofstream out(argv[4]);
+        if (!out) throw std::runtime_error("Could not write result CSV: " + std::string(argv[4]));
+        writeGuiRow(out, {"Type", "Algorithm", "ProcessID", "Arrival", "Burst", "Priority", "Completion", "Turnaround", "Waiting", "Response", "FirstStart", "ActivityStart", "ActivityEnd", "Activity", "AverageWaiting", "AverageTurnaround", "AverageResponse", "CPUUtilizationPercent", "Throughput", "ContextSwitches", "DecisionTime", "Ready", "Selected", "Remaining"});
+        for (const auto& s : result.processes) {
+            std::vector<std::string> row(24);
+            row[0] = "PROCESS"; row[1] = result.algorithm; row[2] = s.process.id;
+            row[3] = std::to_string(s.process.arrival); row[4] = std::to_string(s.process.burst);
+            row[5] = std::to_string(s.process.priority); row[6] = std::to_string(s.completion);
+            row[7] = std::to_string(s.turnaround); row[8] = std::to_string(s.waiting);
+            row[9] = std::to_string(s.response); row[10] = std::to_string(s.firstStart);
+            writeGuiRow(out, row);
+        }
+        std::vector<std::string> metrics(24);
+        metrics[0] = "METRICS"; metrics[1] = result.algorithm;
+        metrics[14] = std::to_string(result.metrics.avgWaiting); metrics[15] = std::to_string(result.metrics.avgTurnaround);
+        metrics[16] = std::to_string(result.metrics.avgResponse); metrics[17] = std::to_string(result.metrics.cpuUtilization);
+        metrics[18] = std::to_string(result.metrics.throughput); metrics[19] = std::to_string(result.metrics.contextSwitches);
+        writeGuiRow(out, metrics);
+        for (const auto& segment : result.timeline) {
+            std::vector<std::string> row(24);
+            row[0] = "TIMELINE"; row[1] = result.algorithm;
+            row[11] = std::to_string(segment.start); row[12] = std::to_string(segment.end); row[13] = segment.label;
+            writeGuiRow(out, row);
+        }
+        for (const auto& decision : result.decisions) {
+            std::vector<std::string> row(24);
+            row[0] = "DECISION"; row[1] = result.algorithm;
+            row[20] = std::to_string(decision.time); row[21] = decision.ready;
+            row[22] = decision.selected; row[23] = decision.remaining;
+            writeGuiRow(out, row);
+        }
+        if (!out) throw std::runtime_error("Failed while writing result CSV.");
+        return 0;
+    } catch (const std::exception& e) { std::cerr << "GUI backend error: " << e.what() << '\n'; return 2; }
+}
+
 static int launchGui(const char* executable) {
     std::error_code pathError;
     std::filesystem::path binaryPath = std::filesystem::absolute(executable, pathError);
@@ -474,6 +605,10 @@ int main(int argc, char* argv[]) {
     using namespace cpusim;
     if (argc > 1 && std::string(argv[1]) == "--test") return runTests();
     if (argc > 1 && std::string(argv[1]) == "--gui-run") return runGuiBackend(argc, argv);
+    if (argc > 1 && std::string(argv[1]) == "--gui-normalize") return runGuiNormalizeBackend(argc, argv);
+    if (argc > 1 && std::string(argv[1]) == "--gui-generate") return runGuiGenerateBackend(argc, argv);
+    if (argc > 1 && std::string(argv[1]) == "--gui-compare") return runGuiCompareBackend(argc, argv);
+    if (argc > 1 && std::string(argv[1]) == "--gui-export-result") return runGuiExportResultBackend(argc, argv);
     if (argc == 1) return launchGui(argv[0]);
     if (argc > 1 && std::string(argv[1]) != "--terminal") {
         std::cerr << "Usage: scheduler [--terminal | --test]\n";

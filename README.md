@@ -1,6 +1,6 @@
 # CPU Scheduling Simulator
 
-A portable CPU-scheduling simulator whose normal launch opens the **Python/Tkinter desktop GUI**. The original C++17 terminal menu remains available as an optional mode. Both interfaces use the same tested C++ scheduling engine for all six policies, per-process and aggregate metrics, context-switch overhead, and priority aging.
+A portable CPU-scheduling simulator whose normal launch opens the **Python/Tkinter desktop GUI**. Python is only the interface: the C++17 backend performs scheduling, random workload generation, CSV validation/normalization, algorithm comparisons, metrics, and result exports. The original C++ terminal menu remains available as an optional mode.
 
 ## Features
 
@@ -12,7 +12,7 @@ A portable CPU-scheduling simulator whose normal launch opens the **Python/Tkint
 - All-algorithm comparison on one dataset, per-metric best markers, comparison CSV, and measured benchmarks for 10, 100, 1,000, and 10,000 processes.
 - Reproducible random inputs using a configurable seed; optional context-switch overhead and priority aging.
 - GUI-first startup with editable process table, random data, CSV import/export, algorithm controls, comparison, metrics, Gantt chart, timeline, and execution-step navigation.
-- The Python GUI compiles/invokes the C++17 backend; it does not duplicate the scheduling algorithms and uses no third-party Python packages.
+- Python contains only the Tkinter interface and a thin bridge that transfers the visible process table to C++; scheduling and data operations stay in C++. No third-party Python packages are used.
 - A built-in regression suite available from the menu application or as a separate executable.
 
 ## Requirements
@@ -152,17 +152,16 @@ The benchmark uses `std::chrono::steady_clock` around each scheduler call and ke
 
 ## Tests
 
-The C++ test runner checks all six algorithms, single-process and idle cases, simultaneous and later arrivals, SJF/SRTF differences, preemption, priority ties, Round Robin at multiple quantums and its boundary order, context-switch overhead, aging fairness, CSV round trips, invalid inputs, timeline continuity, exact burst execution, metric formulas, and a 2,000-process workload. Run `./scheduler --test` or build `tests.cpp` separately. Python's standard-library integration tests compile the backend and verify result/timeline/decision CSV output for all six policies with `python3 tests_gui.py`.
+The C++ test runner checks all six algorithms, single-process and idle cases, simultaneous and later arrivals, SJF/SRTF differences, preemption, priority ties, Round Robin at multiple quantums and its boundary order, context-switch overhead, aging fairness, CSV round trips, invalid inputs, timeline continuity, exact burst execution, metric formulas, and a 2,000-process workload. Run `./scheduler --test` or build `tests.cpp` separately.
 
 ## Project structure
 
 ```text
-main.cpp                 Interactive menu, management, analysis, benchmark, demos
+main.cpp                 C++ scheduler, GUI backend commands, and optional terminal menu
 scheduler.hpp            C++17 scheduling engine, policies, timeline and metrics
 io.hpp                   CSV handling, terminal formatting and input helpers
-cpu_scheduler_gui.py     Optional Tkinter desktop front-end using the C++ backend
+cpu_scheduler_gui.py     Tkinter interface and thin C++ backend bridge
 cpu_scheduler_gui.pyw    Windowed Windows double-click launcher (no console)
-tests_gui.py             Standard-library integration tests for the GUI backend contract
 tests.hpp                Assertion-based regression suite
 tests.cpp                Standalone test-runner entry point
 sample_processes.csv     Example workload
